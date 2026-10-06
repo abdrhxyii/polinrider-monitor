@@ -24,6 +24,7 @@ if (-not (Test-Path $configFile)) {
         )
         MaxFileSize = 10000000
         AutoScanOnLaunch = $false
+        IncludeDependencies = $false
     }
     $defaults | ConvertTo-Json | Set-Content -LiteralPath $configFile -Encoding utf8
     Write-Host "  Created config.json" -ForegroundColor Green
@@ -43,7 +44,7 @@ $shortcut = $wshShell.CreateShortcut($lnkPath)
 $shortcut.TargetPath = $vbs
 $shortcut.WorkingDirectory = $root
 $shortcut.IconLocation = "C:\WINDOWS\System32\imageres.dll,16"
-$shortcut.Description = "PolinRider Monitor - scan and clean PolinRider/BeaverTail malware"
+$shortcut.Description = "PolinRider Monitor - static detection and recovery guidance"
 $shortcut.Save()
 Write-Host "  Desktop shortcut created: $lnkPath" -ForegroundColor Green
 
