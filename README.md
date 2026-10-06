@@ -20,7 +20,9 @@ A local Windows PowerShell/WPF tool for static PolinRider detection and recovery
 
 Rules carry a research date and confidence. Generic Node, eval, obfuscation, and automatic-task use alone do not establish infection. Read failures, cancellation, excluded junctions, size/time/file limits, and unresolved references remain visible.
 
-Installed dependencies are excluded by default; enable **Inspect node_modules too** in Settings. Git object storage is excluded. Remote branches/history, arbitrary interpreter reference resolution, complete data-flow analysis, every package ecosystem, and full antivirus/EDR behavior are outside scope. Candidate reads are bounded to 10 MB by default, 100 MB maximum; discovery/analysis is capped at 100,000 entries/files and 600 seconds.
+Installed dependencies are excluded by default; enable **Inspect node_modules too** in Settings. Git object storage is excluded. Remote branches/history, arbitrary interpreter reference resolution, complete data-flow analysis, every package ecosystem, and full antivirus/EDR behavior are outside scope. Candidates must be smaller than the configured size limit (10 MB default, 100 MB maximum setting). Scan Now has no file-count or elapsed-time cap; it continues until the configured roots finish or Stop is pressed.
+
+Scan Now uses one shared worker for original and newer checks, with the original timestamped phases and progress every 25 files. Overlapping roots contribute repeated file visits to the progress total, as in the original; findings and cleanup targets are deduplicated. High Confidence counts distinct files, not matching rules. `Complete` records coverage separately from findings and appears in the dashboard subtitle when false. Literal execution references are resolved from configuration commands/debug fields and package scripts, not arbitrary source comments.
 
 ## Install and use
 
@@ -64,6 +66,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests/Scanner.Tests.ps1
 ```
 
 The execution-policy option applies only to this process running the repository's authored tests. It does not change machine policy or execute specimens. Tests exercise the scanner boundary, JSONC, platform overrides, renamed/nested references, fonts, campaign families, dependency exclusions, host metadata, scope/limits/cancellation, unchanged input bytes, and history compatibility.
+
+The suite also runs the same shared background worker used by Scan Now, instantiates the real WPF dashboard without showing a window, and exercises cleanup only on disposable fixtures with mocked process operations. Larger acceptance checks are available separately:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/LargeDiscovery.Tests.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/FullScan.Verification.ps1
+```
+
+The first traverses 101,000 inert inventory entries. The second scans the configured roots read-only, reconciles discovery against an independent inventory, and saves a detailed report to a uniquely named temporary JSON file. It does not update application history or run cleanup. The live filesystem can change during verification; any inventory mismatch is reported rather than silently accepted.
 
 ## Research and limitations
 

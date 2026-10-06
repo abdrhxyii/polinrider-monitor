@@ -897,6 +897,7 @@ function Save-History($entry) {
         C2Hits        = @($entry.C2Hits)
         BatFiles      = @($entry.BatFiles)
         SchemaVersion = $entry.SchemaVersion
+        Complete      = $entry.Complete
         Findings      = @($entry.Findings)
         CoverageIssues = @($entry.CoverageIssues)
         Coverage      = $entry.Coverage
@@ -937,6 +938,7 @@ function Refresh-Dashboard {
             $ui.StatInfected.Text  = "$infected"
             $ui.StatProcs.Text     = "$procs"
             $ui.StatC2.Text        = "$c2"
+            if ($latest.Complete -eq $false) { $ui.DashSubtitle.Text += "  -  incomplete coverage ($(@($latest.CoverageIssues).Count) issues)" }
             $legacyActionable = (@($latest.LegacyFileEvidence).Count -gt 0 -or @($latest.LegacyBatEvidence).Count -gt 0 -or @($latest.LegacyProcessEvidence).Count -gt 0)
             if ($null -eq $latest.SchemaVersion) { $legacyActionable = (@($latest.InfectedFiles).Count -gt 0 -or @($latest.BatFiles).Count -gt 0 -or @($latest.ProcIds).Count -gt 0) }
             $ui.BtnClean.IsEnabled = $legacyActionable
@@ -1005,64 +1007,17 @@ function Run-Scan {
 
     $rs = [runspacefactory]::CreateRunspace()
     $rs.ApartmentState = 'STA'; $rs.ThreadOptions = 'ReuseThread'; $rs.Open()
-    $rs.SessionStateProxy.SetVariable('m1', $global:m1)
-    $rs.SessionStateProxy.SetVariable('m2', $global:m2)
-    $rs.SessionStateProxy.SetVariable('m3', $global:m3)
-    $rs.SessionStateProxy.SetVariable('m4', $global:m4)
     $rs.SessionStateProxy.SetVariable('scanPaths', @($global:config.ScanPaths))
     $rs.SessionStateProxy.SetVariable('maxSize', $global:config.MaxFileSize)
+    $rs.SessionStateProxy.SetVariable('includeDependencies', [bool]$global:config.IncludeDependencies)
+    $rs.SessionStateProxy.SetVariable('scannerModule', (Join-Path $root 'Scanner.ps1'))
     $rs.SessionStateProxy.SetVariable('scanLog', $global:scanLog)
     $rs.SessionStateProxy.SetVariable('scanState', $global:scanState)
 
     $ps = [PowerShell]::Create(); $ps.Runspace = $rs
     [void]$ps.AddScript({
-        function L($msg) { [void]$scanLog.Add("$((Get-Date).ToString('hh:mm:ss tt')) $msg") }
-        $markers = @($m1, $m2, $m3, $m4)
-        $c2IPs = @('166.88.54.158','54.251.176.6','52.221.63.237','18.142.149.167','34.36.29.190','52.223.34.155','35.71.137.105')
-        $start = Get-Date; $infectedFiles = @(); $totalScanned = 0; $cancelled = $false
-        L '=== file scan ==='
-        :outer foreach ($path in $scanPaths) {
-            if ($scanState.Cancelled) { $cancelled = $true; break }
-            if (-not (Test-Path $path)) { L "[skip] not found: $path"; continue }
-            $scanState.Folder = $path
-            $files = Get-ChildItem -Path $path -Recurse -Force -Include '*.js','*.mjs','*.cjs','*.jsx','*.ts','*.tsx' -ErrorAction SilentlyContinue |
-                Where-Object { $_.FullName -notmatch '\\node_modules\\' -and $_.Length -lt $maxSize }
-            L (">> {0}  ({1} files)" -f $path, $files.Count)
-            foreach ($f in $files) {
-                if ($scanState.Cancelled) { $cancelled = $true; break outer }
-                $totalScanned++; $scanState.Files = $totalScanned
-                $rel = $f.FullName.Substring($path.Length).TrimStart('\','/')
-                if ($rel.Length -gt 80) { $rel = '...' + $rel.Substring($rel.Length - 77) }
-                try {
-                    $c = Get-Content -LiteralPath $f.FullName -Raw -ErrorAction Stop
-                    $hits = 0; foreach ($m in $markers) { if ($c.IndexOf($m) -ge 0) { $hits++ } }
-                    if ($hits -ge 2) { $infectedFiles += $f.FullName; L ("   [HIT] {0}  <-- INFECTED" -f $rel) }
-                    elseif ($totalScanned % 25 -eq 0) { L ("   ... scanned {0} files (current: {1})" -f $totalScanned, $rel) }
-                } catch { L ("   [err] {0}: {1}" -f $rel, $_.Exception.Message) }
-            }
-        }
-        $procIds = @(); $c2Hits = @(); $batFiles = @()
-        if (-not $cancelled) {
-            L '=== process scan ==='
-            $evalMarker = -join ([char[]]@(103,108,111,98,97,108,91))
-            $badProcs = @(Get-WmiObject Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -and $_.CommandLine.IndexOf($evalMarker) -ge 0 -and $_.CommandLine -match ' -e |--eval' })
-            $procIds = @($badProcs | ForEach-Object ProcessId)
-            if ($procIds.Count -eq 0) { L 'no suspicious node.exe processes' } else { foreach ($p in $badProcs) { L ("   [PROC] PID {0}" -f $p.ProcessId) } }
-            L '=== c2 connection scan ==='
-            foreach ($ip in $c2IPs) { foreach ($cn in (Get-NetTCPConnection -RemoteAddress $ip -ErrorAction SilentlyContinue)) { $c2Hits += "$ip <- PID $($cn.OwningProcess)"; L ("   [CONN] {0}" -f $c2Hits[-1]) } }
-            if ($c2Hits.Count -eq 0) { L 'no active C2 connections' }
-            L '=== bat dropper scan (temp_auto_push.bat signature) ==='
-            foreach ($path in $scanPaths) {
-                if ($scanState.Cancelled) { break }; if (-not (Test-Path $path)) { continue }
-                $bats = Get-ChildItem -Path $path -Recurse -Force -Filter '*.bat' -ErrorAction SilentlyContinue | Where-Object { $_.Length -lt 100000 -and $_.FullName -notmatch '\\node_modules\\' }
-                foreach ($b in $bats) { try { $bc = Get-Content -LiteralPath $b.FullName -Raw -ErrorAction Stop; if ($bc -and $bc -match 'commit --amend' -and $bc -match 'git push' -and $bc -match '--no-verify' -and $bc -match 'date %') { $batFiles += $b.FullName; L ("   [BAT] {0}  <-- DROPPER" -f $b.FullName) } } catch {} }
-            }
-            if ($batFiles.Count -eq 0) { L 'no .bat droppers found' }
-        }
-        $elapsed = (Get-Date) - $start
-        $result = if ($cancelled) { 'STOPPED' } elseif ($infectedFiles.Count -eq 0 -and $procIds.Count -eq 0 -and $c2Hits.Count -eq 0 -and $batFiles.Count -eq 0) { 'CLEAN' } else { 'INFECTED' }
-        L ''; L ("=== scan {0}: {1} files in {2:N1}s ===" -f $result.ToLower(), $totalScanned, $elapsed.TotalSeconds)
-        @{ When=(Get-Date -Format 'yyyy-MM-dd hh:mm:ss tt'); Files=$totalScanned; Infected=$infectedFiles.Count; Procs=$procIds.Count; C2=$c2Hits.Count; BatDroppers=$batFiles.Count; Duration=('{0:N1}s' -f $elapsed.TotalSeconds); Result=$result; InfectedFiles=$infectedFiles; ProcIds=$procIds; C2Hits=$c2Hits; BatFiles=$batFiles }
+        . $scannerModule
+        Invoke-PolinRiderScanWorker -ScanPaths $scanPaths -MaxFileSize $maxSize -IncludeDependencies $includeDependencies -ScanLog $scanLog -ScanState $scanState
     })
     $global:currentScanPs     = $ps
     $global:currentScanRs     = $rs
@@ -1106,6 +1061,11 @@ function Run-Scan {
 
                 $result = $null
                 try { $result = $sp.EndInvoke($h)[0] } catch { Append-LiveLog ("error retrieving result: " + $_.Exception.Message) }
+                # Drain final messages produced between the last tick and completion.
+                while ($global:lastLogIndex -lt $global:scanLog.Count) {
+                    Append-LiveLog $global:scanLog[$global:lastLogIndex]
+                    $global:lastLogIndex++
+                }
                 try { $sp.Dispose() } catch {}
                 try { $sr.Close() }   catch {}
 
@@ -1188,6 +1148,7 @@ function Get-CurrentSha256([string]$path) {
 }
 
 function Clean-Infections {
+    param([switch]$SuppressDialog)
     $hist=@(Load-History)
     if ($hist.Count -eq 0) { return }
     $latest=$hist[0]
@@ -1261,13 +1222,13 @@ function Clean-Infections {
             $hist[0].Findings=@($hist[0].Findings | Where-Object {
                 $path=$_.Path
                 $keep=$true
-                if ($_.RuleId -eq 'campaign-markers' -and $path -and (Test-Path -LiteralPath $path) -and $cleanedPaths.Contains([IO.Path]::GetFullPath($path))) { $keep=$false }
-                if ($_.RuleId -eq 'history-rewrite' -and $path -and $deletedBatPaths.Contains([IO.Path]::GetFullPath($path))) { $keep=$false }
+                if ($_.RuleId -in @('campaign-markers','issue-39299-indicators') -and $path -and (Test-Path -LiteralPath $path) -and $cleanedPaths.Contains([IO.Path]::GetFullPath($path))) { $keep=$false }
+                if ($_.RuleId -in @('history-rewrite','issue-39299-indicators') -and $path -and $deletedBatPaths.Contains([IO.Path]::GetFullPath($path))) { $keep=$false }
                 if ($_.Category -eq 'Process' -and $path -match '^PID (\d+)$' -and $killedIds.Contains([int]$Matches[1])) { $keep=$false }
                 $keep
             })
         }
-        $high=@($hist[0].Findings | Where-Object Confidence -eq 'High').Count
+        $high=@($hist[0].Findings | Where-Object { $_.Confidence -eq 'High' -and $_.SHA256 } | Select-Object -ExpandProperty Path -Unique).Count
         $hist[0].Infected=$high
         if ($hist[0].Findings.Count -gt 0) { $hist[0].Result=if ($high) { 'INDICATORS FOUND' } else { 'REVIEW REQUIRED' } }
         elseif ($hist[0].CoverageIssues.Count -gt 0) { $hist[0].Result='INCOMPLETE' }
@@ -1282,7 +1243,7 @@ function Clean-Infections {
     Set-Content -LiteralPath $historyFile -Value (ConvertTo-Json -InputObject @($hist) -Depth 12) -Encoding utf8
     Write-File-Log "Secure: $cleaned original JS file(s), $killed matching Node process(es), $batsRemoved matching batch file(s) handled; $failed skipped or failed. New detections remain review-only."
     Refresh-Dashboard
-    [System.Windows.MessageBox]::Show("Original-pattern cleanup finished.`nCleaned $cleaned source file(s), stopped $killed matching process(es), deleted $batsRemoved matching batch file(s).`n$failed item(s) were skipped or failed. New config, font, and other findings still require manual review.", 'Secure Machine complete', 'OK', 'Information') | Out-Null
+    if (-not $SuppressDialog) { [System.Windows.MessageBox]::Show("Original-pattern cleanup finished.`nCleaned $cleaned source file(s), stopped $killed matching process(es), deleted $batsRemoved matching batch file(s).`n$failed item(s) were skipped or failed. New config, font, and other findings still require manual review.", 'Secure Machine complete', 'OK', 'Information') | Out-Null }
 }
 # === Settings ===
 function Load-PathsIntoUi {

@@ -1,18 +1,47 @@
 # Static scanner. This file defines functions only; candidates are never executed.
 # Rules researched 2026-10-06. Provenance: docs/polinrider-detection-spec.md.
+function Get-PolinRiderKnownIPs {
+    # Original seven indicators plus the OpenSourceMalware remediation article.
+    # Slash-separated storage prevents the detector source matching its own literals.
+    @('166/88/54/158','54/251/176/6','52/221/63/237','18/142/149/167','34/36/29/190','52/223/34/155','35/71/137/105',
+      '198/105/127/210','23/27/202/27','154/91/0/103','136/0/9/8','166/88/4/2','23/27/120/142','202/155/8/173','166/88/134/82','188/43/33/249','23/27/13/43') | ForEach-Object { $_.Replace('/','.') } | Select-Object -Unique
+}
+
+function Invoke-PolinRiderScanWorker {
+    param([string[]]$ScanPaths, [long]$MaxFileSize=10000000, [bool]$IncludeDependencies=$false,
+          $ScanState, $ScanLog, [scriptblock]$HostProvider={ Get-PolinRiderHostObservations })
+    function WorkerLog([string]$message) {
+        if ($message.StartsWith('>> ')) { $ScanState.Folder=$message.Substring(3) }
+        [void]$ScanLog.Add("$((Get-Date).ToString('hh:mm:ss tt')) $message")
+    }
+    $report=Invoke-PolinRiderScan -ScanPaths $ScanPaths -MaxFileSize $MaxFileSize -IncludeDependencies $IncludeDependencies -MaxFiles 0 -MaxSeconds 0 -HostProvider $HostProvider -IsCancelled { $ScanState.Cancelled } -OnLog { param($message) WorkerLog $message } -OnProgress {
+        param($path,$count)
+        $ScanState.Files=$count; $ScanState.Folder=$path
+        if ($count % 25 -eq 0) {
+            $display=$path; if ($display.Length -gt 80) { $display='...'+$display.Substring($display.Length-77) }
+            WorkerLog ('   ... scanned '+$count+' files (current: '+$display+')')
+        }
+    }
+    WorkerLog ''
+    WorkerLog ('=== scan '+$report.Result.ToLower()+': '+$report.Files+' files in '+$report.Duration+' ===')
+    if (-not $report.Complete) { WorkerLog ('[coverage summary] scan incomplete; '+$report.CoverageIssues.Count+' coverage issue(s)') }
+    return $report
+}
+
 function Invoke-PolinRiderScan {
     [CmdletBinding()]
     param(
         [string[]]$ScanPaths,
         [long]$MaxFileSize = 10000000,
         [bool]$IncludeDependencies = $false,
-        [int]$MaxFiles = 100000,
-        [int]$MaxSeconds = 600,
+        [int]$MaxFiles = 0,
+        [int]$MaxSeconds = 0,
         [scriptblock]$IsCancelled = { $false },
         [scriptblock]$OnProgress = {},
+        [scriptblock]$OnLog = {},
         [scriptblock]$HostProvider = { @{ Processes = @(); Connections = @(); Artifacts = @() } }
     )
-    if ($MaxFileSize -lt 1 -or $MaxFileSize -gt 100000000 -or $MaxFiles -lt 1 -or $MaxSeconds -lt 1) {
+    if ($MaxFileSize -lt 1 -or $MaxFileSize -gt 100000000 -or $MaxFiles -lt 0 -or $MaxSeconds -lt 0) {
         throw 'Invalid scan limits (maximum supported file size is 100 MB).'
     }
     $findings = New-Object 'System.Collections.Generic.List[object]'
@@ -26,13 +55,24 @@ function Invoke-PolinRiderScan {
     $legacyBats=New-Object 'System.Collections.Generic.List[object]'
     $legacyProcesses=New-Object 'System.Collections.Generic.List[object]'
     $roots = New-Object 'System.Collections.Generic.List[string]'
-    function Issue($path, $reason) { $issues.Add([pscustomobject]@{ Path = $path; Reason = $reason }) }
+    $occurrences = @{}
+    $findingKeys = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    $issueKeys = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    $knownIps = @(Get-PolinRiderKnownIPs)
+    function Issue($path, $reason) {
+        if ($issueKeys.Add($path+'|'+$reason)) {
+            $issues.Add([pscustomobject]@{ Path = $path; Reason = $reason })
+            & $OnLog ('[coverage] '+$path+' | '+$reason)
+        }
+    }
     function Finding($path, $category, $rule, $confidence, $reason, $hash, $location, $reference) {
+        if (-not $findingKeys.Add($path+'|'+$rule+'|'+$location+'|'+$reference)) { return }
         $findings.Add([pscustomobject]@{
             Path = $path; Category = $category; RuleId = $rule; RuleVersion = '2026-10-06'
             Confidence = $confidence; Reason = $reason; SHA256 = $hash
             Location = $location; Reference = $reference; Remediation = 'ReviewOnly'
         })
+        & $OnLog ('[finding '+$confidence+'] '+$path+' | '+$rule+' | '+$reason)
     }
     function InScope([string]$path) {
         foreach ($r in $roots) {
@@ -55,10 +95,14 @@ function Invoke-PolinRiderScan {
     }
     function Limited {
         if (& $IsCancelled) { return $true }
-        return ($clock.Elapsed.TotalSeconds -ge $MaxSeconds)
+        return ($MaxSeconds -gt 0 -and $clock.Elapsed.TotalSeconds -ge $MaxSeconds)
     }
     function Matches([string]$text, [string]$pattern) {
-        return [regex]::Matches($text, $pattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase, [TimeSpan]::FromMilliseconds(200))
+        try { return [regex]::Matches($text, $pattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase, [TimeSpan]::FromMilliseconds(200)) }
+        catch [Text.RegularExpressions.RegexMatchTimeoutException] {
+            Issue $path 'A bounded text rule timed out; remaining checks continued.'
+            return @()
+        }
     }
     # Remove JSONC comments/trailing commas while preserving strings and positions.
     function JsonData([string]$text) {
@@ -132,7 +176,7 @@ function Invoke-PolinRiderScan {
             $target = ($m.Groups[1].Value, $m.Groups[2].Value, $m.Groups[3].Value | Where-Object { $_ } | Select-Object -First 1)
             if ($target.StartsWith('-')) { Issue $source 'Node flags or inline execution require manual reference review.'; continue }
             $target = $target.Replace('${workspaceFolder}', $base)
-            if ($target -match '\$|%|`|[()]') { Issue $source 'Dynamic execution reference could not be resolved.'; continue }
+            if ($target -match '\$|%|`') { Issue $source 'Dynamic execution reference could not be resolved.'; continue }
             try {
                 $target = if ([IO.Path]::IsPathRooted($target)) { [IO.Path]::GetFullPath($target) } else { [IO.Path]::GetFullPath((Join-Path $base $target)) }
                 if (-not (InScope $target)) { Issue $source 'Execution reference points outside selected roots.'; continue }
@@ -142,7 +186,7 @@ function Invoke-PolinRiderScan {
                 if ([IO.Path]::GetExtension($target) -notin @('.js','.mjs','.cjs','.ts','.tsx','.jsx')) {
                     Finding $source 'Execution' 'node-asset' 'Suspicious' 'Node executes a file with an unexpected extension.' $hash $field $target
                 }
-                if ($queued.Count -ge $MaxFiles) { Issue $target 'Reference/discovery limit reached.'; continue }
+                if ($MaxFiles -gt 0 -and $queued.Count -ge $MaxFiles) { Issue $target 'Reference/discovery limit reached.'; continue }
                 if ($queued.Add($target)) { $queue.Enqueue(@{ Path=$target; Reference=$source }) }
                 elseif ($seen.Contains($target)) {
                     foreach ($f in @($findings.ToArray())) {
@@ -152,26 +196,32 @@ function Invoke-PolinRiderScan {
             } catch { Issue $source 'Execution reference could not be inspected.' }
         }
     }
-    function InspectString($text, $source, $hash, $field, $base) {
+    function InspectString($text, $source, $hash, $field, $base, [bool]$commandContext=$false) {
         # Assemble signatures so scanning this detector does not match its own rule definitions.
-        $downloadPattern = '\b(' + ('cu'+'rl|we'+'gt|Invoke-'+'WebRequest|i'+'wr|Download'+'String') + ')\b'
+        $downloadPattern = '\b(' + ('cu'+'rl|wg'+'et|Invoke-'+'WebRequest|i'+'wr|Download'+'String') + ')\b'
         $executePattern = '(\|\s*(' + ('ba'+'sh|s'+'h|c'+'md|power'+'shell|i'+'ex') + ')\b|\b(' + ('Invoke-'+'Expression|i'+'ex') + ')\b)'
-        $download = (Matches $text $downloadPattern).Count -gt 0
-        $execute = (Matches $text $executePattern).Count -gt 0
-        if ($download -and $execute) { Finding $source 'Execution' 'download-execute' 'High' 'Command downloads content and passes it to an interpreter.' $hash $field $null }
-        if ((Matches $text '\b(?:powershell|pwsh)(?:\.exe)?\b[^\r\n]*\s-(?:enc|encodedcommand)\b').Count) {
+        $download = $commandContext -and (Matches $text $downloadPattern).Count -gt 0
+        $execute = $commandContext -and (Matches $text $executePattern).Count -gt 0
+        $pipelinePattern=$downloadPattern+'[^;\r\n|]*\|\s*(bash|sh|cmd|powershell|pwsh|iex)\b'
+        if ($commandContext -and $download -and $execute -and (Matches $text $pipelinePattern).Count) { Finding $source 'Execution' 'download-execute' 'High' 'Command downloads content and pipes it to an interpreter.' $hash $field $null }
+        elseif ($commandContext -and $download -and $execute) { Finding $source 'Execution' 'download-execute' 'Suspicious' 'Download and execution tokens occur in a command; review the data flow.' $hash $field $null }
+        if ($commandContext -and (Matches $text '\b(node|nodejs|powershell|pwsh|cmd|curl|wget|Invoke-WebRequest)(?:\.exe)?\b').Count) {
+            Finding $source 'Configuration' 'interpreter-command' 'Review' 'Command invokes an interpreter or download tool; verify its purpose.' $hash $field $null
+        }
+        if ($text.IndexOf('-enc',[StringComparison]::OrdinalIgnoreCase) -ge 0 -and (Matches $text '\b(?:powershell|pwsh)(?:\.exe)?\b[^\r\n]*\s-(?:enc|encodedcommand)\b').Count) {
             Finding $source 'Execution' 'encoded-shell' 'Suspicious' 'Encoded PowerShell execution requires review.' $hash $field $null
         }
         if ((Matches $text 'api\.telegram\.org/bot').Count) {
             Finding $source 'Exfiltration' 'telegram-bot-api' 'Suspicious' 'Telegram Bot API endpoint indicator found; review whether project code sends collected data.' $hash $field $null
         }
-        References $text $base $source $hash $field
+        if ($commandContext) { References $text $base $source $hash $field }
     }
     function WalkData($data, $source, $hash, $field, $base, $depth=0) {
         if ($depth -gt 64) { Issue $source 'Configuration depth limit reached.'; return }
         if ($data -is [string]) {
             # Inspect every value to cover platform overrides and command-bearing settings.
             InspectString $data $source $hash $field $base
+            if ($field -match 'runtimeExecutable$|terminal\..*\.path$') { InspectString $data $source $hash $field $base $true }
             if ($field -match '(program|runtimeExecutable|path)$' -and $data -match '\.(woff2?|ttf|otf|llf)$') {
                 References ('node "' + $data + '"') $base $source $hash $field
             }
@@ -186,10 +236,15 @@ function Invoke-PolinRiderScan {
             if ($data.command) {
                 if ($data.options.cwd -or $data.cwd) { Issue $source 'Custom working directory requires manual execution-reference review.' }
                 $argsText = (@($data.args) | ForEach-Object { '"' + $_ + '"' }) -join ' '
-                InspectString ($data.command+' '+$argsText) $source $hash ($field+'.command+args') $base
+                InspectString ($data.command+' '+$argsText) $source $hash ($field+'.command+args') $base $true
             }
-            if ($data.program -and $data.runtimeExecutable -match '^node(?:\.exe)?$') { References ('node "'+$data.program+'"') $base $source $hash ($field+'.program') }
+            if ($data.path -and $field -match 'terminal\.') {
+                $argsText=(@($data.args) | ForEach-Object { '"'+$_+'"' }) -join ' '
+                InspectString ($data.path+' '+$argsText) $source $hash ($field+'.path+args') $base $true
+            }
+            if ($data.program -and ($data.runtimeExecutable -match '^node(?:\.exe)?$' -or $data.type -in @('node','pwa-node'))) { References ('node "'+$data.program+'"') $base $source $hash ($field+'.program') }
             foreach ($p in $data.PSObject.Properties) {
+                if ($field -eq '$.scripts' -and $p.Value -is [string]) { InspectString $p.Value $source $hash ($field+'.'+$p.Name) $base $true }
                 if ($p.Name -eq 'task.allowAutomaticTasks' -and ($p.Value -eq $true -or $p.Value -eq 'on')) {
                     Finding $source 'Configuration' 'automatic-tasks-enabled' 'Review' 'Workspace requests automatic tasks; review trust and task definitions.' $hash ($field+'.'+$p.Name) $null
                 }
@@ -202,14 +257,20 @@ function Invoke-PolinRiderScan {
             $r = [IO.Path]::GetFullPath($path)
             if ($r -ne [IO.Path]::GetPathRoot($r)) { $r = $r.TrimEnd([IO.Path]::DirectorySeparatorChar) }
             if (-not [IO.Directory]::Exists($r)) { Issue $path 'Scan root is missing or inaccessible.'; continue }
+            if (-not $IncludeDependencies -and $r -match '(^|[\\/])node_modules([\\/]|$)') { Issue $r 'Dependency root excluded by configuration.'; continue }
             if (LinkedPath $r) { Issue $r 'Scan root crosses a reparse point.'; continue }
             $roots.Add($r)
         } catch { Issue $path 'Invalid scan root.' }
     }
     $dirs = New-Object 'System.Collections.Generic.Stack[string]'
-    foreach ($r in $roots) { $dirs.Push($r) }
-    $visitedDirs = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
     $discovered = 0
+    & $OnLog '=== file scan ==='
+    foreach ($r in $roots) {
+    if (Limited) { $stopped=$true; break }
+    & $OnLog ('>> '+$r+' (discovering files)')
+    $rootCandidates=0
+    $dirs.Push($r)
+    $visitedDirs = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
     while ($dirs.Count) {
         if (Limited) { $stopped=$true; break }
         $dir=$dirs.Pop(); if (-not $visitedDirs.Add($dir)) { continue }
@@ -217,7 +278,7 @@ function Invoke-PolinRiderScan {
             foreach ($item in (Get-ChildItem -LiteralPath $dir -Force -ErrorAction Stop)) {
                 if (Limited) { $stopped=$true; $dirs.Clear(); break }
                 $discovered++
-                if ($discovered -gt $MaxFiles) { Issue $dir 'Discovery limit reached.'; $dirs.Clear(); break }
+                if ($MaxFiles -gt 0 -and $discovered -gt $MaxFiles) { Issue $dir 'Discovery limit reached.'; $dirs.Clear(); break }
                 if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { Issue $item.FullName 'Reparse point excluded.'; continue }
                 if ($item.PSIsContainer) {
                     if ($item.Name -eq '.git') { continue }
@@ -228,9 +289,16 @@ function Invoke-PolinRiderScan {
                 $eligible = $ext -in @('.js','.mjs','.cjs','.jsx','.ts','.tsx','.php','.woff','.woff2','.ttf','.otf','.llf','.bat','.cmd','.ps1','.code-workspace') -or
                     $ext -eq '.dict' -or $item.Name -in @('package.json','package-lock.json','npm-shrinkwrap.json','yarn.lock','pnpm-lock.yaml','composer.json','composer.lock','temp_auto_push.bat','config.bat') -or
                     ($dir -match '[\\/]\.vscode$' -and $ext -eq '.json')
-                if ($eligible -and $queued.Add($item.FullName)) { $queue.Enqueue(@{ Path=$item.FullName; Reference=$null }) }
+                if ($eligible) {
+                    if ($item.Length -ge $MaxFileSize) { Issue $item.FullName 'File meets or exceeds size limit.'; continue }
+                    $rootCandidates++
+                    $occurrences[$item.FullName]=1+[int]$occurrences[$item.FullName]
+                    if ($queued.Add($item.FullName)) { $queue.Enqueue(@{ Path=$item.FullName; Reference=$null }) }
+                }
             }
         } catch { Issue $dir 'Directory could not be fully enumerated.' }
+    }
+    & $OnLog ('>> '+$r+' ('+$rootCandidates+' files)')
     }
     $original = @(('rmcej'+'%otb%'),('_$_'+'1e42'),('285'+'7687'),('266'+'7686'))
     $rotated = @(('Cot%3'+'t=shtP'),('111'+'1436'),('389'+'6884'))
@@ -239,13 +307,14 @@ function Invoke-PolinRiderScan {
         if (Limited) { $stopped=$true; break }
         $candidate=$queue.Dequeue(); $path=$candidate.Path
         if (-not $seen.Add($path)) { continue }
-        if ($count -ge $MaxFiles) { Issue $path 'Analysis file limit reached.'; break }
-        $count++; & $OnProgress $path $count
+        if ($MaxFiles -gt 0 -and $seen.Count -gt $MaxFiles) { Issue $path 'Analysis file limit reached.'; break }
+        $attempts=[Math]::Max(1,[int]$occurrences[$path])
+        for ($attempt=0; $attempt -lt $attempts; $attempt++) { $count++; & $OnProgress $path $count }
         try {
             if (LinkedPath $path) { Issue $path 'File crosses a reparse point.'; continue }
             $stream=[IO.File]::Open($path,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
             try {
-                if ($stream.Length -gt $MaxFileSize) { Issue $path 'File exceeds size limit.'; continue }
+                if ($stream.Length -ge $MaxFileSize) { Issue $path 'File meets or exceeds size limit.'; continue }
                 $bytes=New-Object byte[] ([int]$stream.Length); $offset=0
                 while ($offset -lt $bytes.Length) {
                     $n=$stream.Read($bytes,$offset,[Math]::Min(65536,$bytes.Length-$offset))
@@ -260,6 +329,14 @@ function Invoke-PolinRiderScan {
             if ($bytes.Length -ge 2 -and $bytes[0] -eq 255 -and $bytes[1] -eq 254) { $text=[Text.Encoding]::Unicode.GetString($bytes) }
             $ext=[IO.Path]::GetExtension($path).ToLowerInvariant(); $name=[IO.Path]::GetFileName($path)
             $v1=@($original | Where-Object { $text.Contains($_) }).Count
+            # Original detection must survive a timeout/failure in any newer rule.
+            if ($v1 -ge 2) {
+                Finding $path 'Payload' 'campaign-markers' 'High' 'Multiple documented PolinRider fingerprints occur together.' $hash 'content' $candidate.Reference
+                if ($ext -in @('.js','.mjs','.cjs','.jsx','.ts','.tsx')) {
+                    $legacyFiles.Add([pscustomobject]@{Path=$path;SHA256=$hash})
+                    & $OnLog ('   [HIT] '+$path+'  <-- INFECTED (original markers)')
+                }
+            }
             $v2=@($rotated | Where-Object { $text.Contains($_) }).Count
             $markerEvidence=New-Object 'System.Collections.Generic.List[string]'
             if ($text.Contains($original[0])) { $markerEvidence.Add('rmcej variant string') }
@@ -268,20 +345,23 @@ function Invoke-PolinRiderScan {
             if ($text.Contains($originalSlot)) { $markerEvidence.Add('original global decoder slot') }
             if ($text.Contains($rotated[0])) { $markerEvidence.Add('Cot variant string') }
             $decoderName='M'+'Dy'
-            if ((Matches $text ('\bfunction\s+'+$decoderName+'\s*\(\s*f\s*\)')).Count) { $markerEvidence.Add('rotated decoder function') }
+            $hasRotatedDecoder=(Matches $text ('\bfunction\s+'+$decoderName+'\s*\(\s*f\s*\)')).Count -gt 0
+            if ($hasRotatedDecoder) { $markerEvidence.Add('rotated decoder function') }
             $vSlot='_'+'V'
-            if ((Matches $text ('global\s*\[\s*[''"]'+$vSlot+'[''"]\s*\]')).Count) { $markerEvidence.Add('rotated global decoder slot') }
+            $hasRotatedSlot=(Matches $text ('global\s*\[\s*[''"]'+$vSlot+'[''"]\s*\]')).Count -gt 0
+            if ($hasRotatedSlot) { $markerEvidence.Add('rotated global decoder slot') }
+            $rotatedMatch=$text.Contains($rotated[0]) -and ($v2 -ge 2 -or $hasRotatedDecoder -or $hasRotatedSlot)
             $commitToken='LAST_COMMIT_'+'DATE'
             if ($ext -in @('.bat','.cmd') -and (Matches $text ('\b'+$commitToken+'\b')).Count) { $markerEvidence.Add('batch commit-date indicator') }
             $propagationName='temp_auto_push'+'.bat'
             if ($name -ieq $propagationName) { $markerEvidence.Add('known propagation filename') }
             if ($name -ieq 'config.bat') { $markerEvidence.Add('known configuration batch artifact') }
             if ($markerEvidence.Count -gt 0) {
-                $confidence=if ($v1 -ge 2 -or ($text.Contains($rotated[0]) -and $v2 -ge 2) -or ($ext -eq '.bat' -and $text -match 'commit --amend' -and $text -match 'git push' -and $text -match '--no-verify' -and $text -match 'date %')) { 'High' } else { 'Review' }
+                $confidence=if ($v1 -ge 2 -or $rotatedMatch -or ($ext -eq '.bat' -and $text -match 'commit --amend' -and $text -match 'git push' -and $text -match '--no-verify' -and $text -match 'date %')) { 'High' } else { 'Review' }
                 $strength=if ($confidence -eq 'High') { 'Several campaign invariants match:' } else { 'Campaign-related marker requires review:' }
                 Finding $path 'CampaignMarker' 'issue-39299-indicators' $confidence ($strength+' '+($markerEvidence -join ', ')+'.') $hash 'content/name' $candidate.Reference
             }
-            if ($v1 -ge 2 -or ($text.Contains($rotated[0]) -and $v2 -ge 2)) {
+            if ($v1 -ge 2 -or $rotatedMatch) {
                 Finding $path 'Payload' 'campaign-markers' 'High' 'Multiple documented PolinRider fingerprints occur together.' $hash 'content' $candidate.Reference
             } elseif ((Matches $text ('\bglobal\s*(?:\.i\s*=|\[\s*[''"](?:!|'+$vSlot+')[''"]\s*\]\s*=)')).Count -and
                 (Matches $text '(eval\s*\(|_0x[a-f0-9]{4,}|child_process)').Count) {
@@ -290,15 +370,19 @@ function Invoke-PolinRiderScan {
             # Keep the original Secure Machine behavior available only for its
             # original JS marker threshold and batch signature. New rules never
             # enter this cleanup allowlist.
-            if ($ext -in @('.js','.mjs','.cjs','.jsx','.ts','.tsx') -and $v1 -ge 2) {
-                $legacyFiles.Add([pscustomobject]@{Path=$path;SHA256=$hash})
-            }
             if ((Matches $text '(default-configuration|vscode-settings-bootstrap|vscode-settings-config|vscode-bootstrapper|vscode-load-config|260120)\.vercel\.app').Count) {
                 Finding $path 'Indicator' 'campaign-domain' 'Suspicious' 'A documented campaign domain occurs in this file.' $hash 'content' $candidate.Reference
             }
             if ($ext -in @('.woff','.woff2','.ttf','.otf')) {
                 $anomaly=InspectFont $bytes $ext
                 if ($anomaly) { Finding $path 'Asset' 'font-container' 'Suspicious' $anomaly $hash 'header/tables' $candidate.Reference }
+            }
+            if ($ext -in @('.woff','.woff2','.ttf','.otf','.llf','.dict') -and (Matches $text '\b(require\s*\(|global\s*\[|eval\s*\(|child_process\b|fetch\s*\()').Count) {
+                Finding $path 'Asset' 'asset-javascript' 'Review' 'Readable JavaScript indicators occur in an asset; inspect its purpose and execution references.' $hash 'content' $candidate.Reference
+            }
+            if ($name -ieq 'spellright.dict') { Finding $path 'Artifact' 'dictionary-artifact' 'Review' 'Documented dictionary filename; a legitimate dictionary can have the same name.' $hash 'filename' $candidate.Reference }
+            foreach ($ip in $knownIps) {
+                if ($text.Contains($ip) -and (Matches $text ('(?<![\d.])'+[regex]::Escape($ip)+'(?![\d.])')).Count) { Finding $path 'Indicator' 'known-ip-content' 'Review' ('Known IP indicator in file: '+$ip+'. Verify its use.') $hash 'content' $ip }
             }
             $isConfig=$path -match '[\\/]\.vscode[\\/][^\\/]+\.json$' -or $ext -eq '.code-workspace'
             $isManifest=$name -in @('package.json','package-lock.json','npm-shrinkwrap.json','composer.json','composer.lock')
@@ -307,7 +391,7 @@ function Invoke-PolinRiderScan {
             if ($isConfig -or $isManifest) {
                 try { $data=JsonData $text; WalkData $data $path $hash '$' $base }
                 catch { Issue $path 'JSONC parsing failed or exceeded limits; raw inspection still performed.'; InspectString $text $path $hash 'raw fallback' $base }
-            } elseif ($ext -notin @('.woff','.woff2','.ttf','.otf')) { InspectString $text $path $hash 'content' $base }
+            } else { InspectString $text $path $hash 'content' $base }
             if ($name -in @('yarn.lock','pnpm-lock.yaml')) { Issue $path 'Lockfile checked for identifiers only; structured format is unsupported.' }
             if ($isManifest -or $name -in @('yarn.lock','pnpm-lock.yaml')) {
                 foreach ($package in $packages) {
@@ -329,7 +413,7 @@ function Invoke-PolinRiderScan {
             }
             if ($ext -in @('.bat','.cmd') -and $text -match 'commit --amend' -and $text -match 'git push' -and $text -match '--no-verify' -and $text -match 'date %') {
                 Finding $path 'Propagation' 'history-rewrite' 'High' 'Batch script matches the documented Git history rewriting pattern.' $hash 'content' $null
-                if ($ext -eq '.bat') { $legacyBats.Add([pscustomobject]@{Path=$path;SHA256=$hash}) }
+                if ($ext -eq '.bat' -and $bytes.Length -lt 100000) { $legacyBats.Add([pscustomobject]@{Path=$path;SHA256=$hash}) }
             }
         } catch {
             $failure = $_.Exception
@@ -341,11 +425,12 @@ function Invoke-PolinRiderScan {
     if ($stopped) { Issue '' 'Scan cancelled or elapsed time limit reached.' }
     try {
         if (-not $stopped) {
+            & $OnLog '=== process scan ==='
             $hostData=& $HostProvider
             foreach ($p in $hostData.Processes) {
                 if ($p.Name -match '^(node|nodejs|python|pythonw|powershell|pwsh)(\.exe)?$' -and $p.CommandLine) {
                     $inline=$p.CommandLine -match '(?: -e |--eval)' -and $p.CommandLine -match 'global[.\[]'
-                    $asset=$p.Name -match '^node' -and $p.CommandLine -match '\.(woff2?|llf|ttf)\b'
+                    $asset=$p.Name -match '^node' -and $p.CommandLine -match '\.(woff2?|llf|ttf|otf)\b'
                     if ($inline -or $asset) {
                     $connected=@($hostData.Connections | Where-Object { $_.OwningProcess -eq $p.ProcessId }).Count
                         Finding ('PID '+$p.ProcessId) 'Process' 'suspicious-launch' 'Suspicious' ('Suspicious interpreter launch; parent PID '+$p.ParentProcessId+'; active connections '+$connected+'.') $null 'process metadata (arguments redacted)' $p.ExecutablePath
@@ -355,15 +440,17 @@ function Invoke-PolinRiderScan {
                         $procHash=[Security.Cryptography.SHA256]::Create()
                         try { $commandHash=([BitConverter]::ToString($procHash.ComputeHash([Text.Encoding]::UTF8.GetBytes($p.CommandLine))).Replace('-','').ToLowerInvariant()) } finally { $procHash.Dispose() }
                         $legacyProcesses.Add([pscustomobject]@{ProcessId=[int]$p.ProcessId;CommandLineHash=$commandHash})
+                        & $OnLog ('   [PROC] PID '+$p.ProcessId)
                     }
                 }
             }
             foreach ($artifact in $hostData.Artifacts) { Finding $artifact 'Host' 'credential-staging' 'Suspicious' 'Documented credential-staging filename found; contents were not read.' $null 'filename only' $null }
-            $knownIps=@('166.88.54.158','54.251.176.6','52.221.63.237','18.142.149.167','34.36.29.190','52.223.34.155','35.71.137.105',
-                '198.105.127.210','23.27.202.27','154.91.0.103','136.0.9.8','166.88.4.2','23.27.120.142','202.155.8.173','166.88.134.82','188.43.33.249','23.27.13.43')
+            if (-not $legacyProcesses.Count) { & $OnLog 'no suspicious node.exe processes' }
+            & $OnLog '=== c2 connection scan ==='
             foreach ($connection in $hostData.Connections) {
                 if ($connection.RemoteAddress -in $knownIps) {
                     Finding ('PID '+$connection.OwningProcess) 'Network' 'legacy-network-indicator' 'Review' 'Connection matches a legacy IP indicator; shared infrastructure alone does not establish malware.' $null 'connection metadata' $connection.RemoteAddress
+                    & $OnLog ('   [CONN] '+$connection.RemoteAddress+' <- PID '+$connection.OwningProcess)
                 }
             }
             foreach ($p in $hostData.Processes) {
@@ -372,29 +459,33 @@ function Invoke-PolinRiderScan {
                 }
             }
             foreach ($failure in $hostData.Issues) { Issue 'Host observations' $failure }
+            if (-not @($findings | Where-Object Category -eq 'Network').Count) { & $OnLog 'no active C2 connections' }
+            & $OnLog '=== bat dropper scan (temp_auto_push.bat signature) ==='
+            foreach ($bat in $legacyBats) { & $OnLog ('   [BAT] '+$bat.Path+'  <-- DROPPER') }
+            if (-not $legacyBats.Count) { & $OnLog 'no .bat droppers found' }
         }
     } catch { Issue 'Host observations' 'Host observations unavailable.' }
-    $high=@($findings | Where-Object Confidence -eq 'High').Count
+    $high=@($findings | Where-Object { $_.Confidence -eq 'High' -and $_.SHA256 } | Select-Object -ExpandProperty Path -Unique).Count
     $status=if ($stopped) { 'STOPPED' } elseif ($high) { 'INDICATORS FOUND' } elseif ($findings.Count) { 'REVIEW REQUIRED' } elseif ($issues.Count) { 'INCOMPLETE' } else { 'NO INDICATORS IN SCOPE' }
     return [pscustomobject]@{
-        SchemaVersion=2; When=(Get-Date -Format 'yyyy-MM-dd hh:mm:ss tt'); Result=$status
+        SchemaVersion=2; When=(Get-Date -Format 'yyyy-MM-dd hh:mm:ss tt'); Result=$status; Complete=(-not $stopped -and $issues.Count -eq 0)
         Files=$count; Infected=$high; Procs=@($findings | Where-Object Category -eq 'Process').Count; C2=@($findings | Where-Object Category -eq 'Network').Count
         BatDroppers=@($findings | Where-Object Category -eq 'Propagation').Count
         Duration=('{0:N1}s' -f $clock.Elapsed.TotalSeconds); Findings=@($findings.ToArray()); CoverageIssues=@($issues.ToArray())
-        Coverage=[pscustomobject]@{ Roots=@($roots.ToArray()); IncludeDependencies=$IncludeDependencies; ExcludedDependencyDirectories=$dependencyExclusions; MaxFileSize=$MaxFileSize; MaxFiles=$MaxFiles; MaxSeconds=$MaxSeconds; HostObservationProviderSupplied=$PSBoundParameters.ContainsKey('HostProvider') }
+        Coverage=[pscustomobject]@{ Roots=@($roots.ToArray()); IncludeDependencies=$IncludeDependencies; ExcludedDependencyDirectories=$dependencyExclusions; MaxFileSize=$MaxFileSize; MaxFiles=$MaxFiles; MaxSeconds=$MaxSeconds; HostObservationProviderSupplied=$PSBoundParameters.ContainsKey('HostProvider'); DiscoveredFileVisits=($occurrences.Values | Measure-Object -Sum).Sum; DiscoveredUniqueFiles=$occurrences.Count; AnalyzedUniqueFiles=$seen.Count }
         InfectedFiles=@($legacyFiles.ToArray() | ForEach-Object Path)
         LegacyFileEvidence=@($legacyFiles.ToArray())
         LegacyBatEvidence=@($legacyBats.ToArray())
         LegacyProcessEvidence=@($legacyProcesses.ToArray())
         ProcIds=@($legacyProcesses.ToArray() | ForEach-Object ProcessId)
-        C2Hits=@(); BatFiles=@($legacyBats.ToArray() | ForEach-Object Path); ReportOnly=$false
+        C2Hits=@($findings | Where-Object Category -eq 'Network' | ForEach-Object { $_.Reference+' <- '+$_.Path }); BatFiles=@($legacyBats.ToArray() | ForEach-Object Path); ReportOnly=$true
     }
 }
 
 function Get-PolinRiderHostObservations {
     $failures=@(); $processes=@(); $connections=@(); $artifacts=@()
     try { $processes=@(Get-CimInstance Win32_Process -ErrorAction Stop | Select-Object Name,ProcessId,ParentProcessId,ExecutablePath,CommandLine) } catch { $failures+='Process enumeration unavailable.' }
-    try { $connections=@(Get-NetTCPConnection -State Established -ErrorAction Stop | Select-Object OwningProcess,RemoteAddress,RemotePort) } catch { $failures+='Connection enumeration unavailable.' }
+    try { $connections=@(Get-NetTCPConnection -ErrorAction Stop | Select-Object OwningProcess,RemoteAddress,RemotePort) } catch { $failures+='Connection enumeration unavailable.' }
     # Inspect filenames only, with a bounded walk and no reparse points.
     $staging=Join-Path $env:USERPROFILE '.npm'
     if ([IO.Directory]::Exists($staging)) {
