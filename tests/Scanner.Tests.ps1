@@ -22,7 +22,7 @@ try {
     WriteFixture 'nested/.vscode/settings.json' '{"task.allowAutomaticTasks":true,"terminal.integrated.profiles.windows":{"custom":{"path":"helper.cmd"}}}' | Out-Null
     WriteFixture 'nested/.vscode/launch.json' '{"configurations":[{"runtimeExecutable":"node","program":"${workspaceFolder}/assets/renamed.data"}]}' | Out-Null
     WriteFixture 'rotated.ts' ('INERT FIXTURE '+('Cot%3'+'t=shtP')+' '+('111'+'1436')) | Out-Null
-    WriteFixture 'structural.js' 'INERT TEXT: global.i = A8 _0xabcdef' | Out-Null
+    WriteFixture 'structural.js' ('INERT TEXT: '+('global.i'+' = A8 ')+('_'+'0xabcdef')) | Out-Null
     WriteFixture 'package.json' '{"dependencies":{"tailwindcss-style-animate":"1.1.6"},"scripts":{"inspect":"node nested/assets/renamed.data"}}' | Out-Null
     WriteFixture 'fake.woff2' ('INERT FIXTURE '+('rmcej'+'%otb%')+' '+('_$_'+'1e42')) | Out-Null
     WriteFixture 'fake.llf' ('INERT FIXTURE '+('Cot%3'+'t=shtP')+' '+('389'+'6884')) | Out-Null

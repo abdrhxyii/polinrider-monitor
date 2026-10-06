@@ -138,7 +138,7 @@ function Invoke-PolinRiderScan {
                 if (-not (InScope $target)) { Issue $source 'Execution reference points outside selected roots.'; continue }
                 if (LinkedPath $target) { Issue $target 'Execution reference crosses a reparse point.'; continue }
                 if (-not [IO.File]::Exists($target)) { Issue $target 'Referenced executable file is missing.'; continue }
-                if (-not $IncludeDependencies -and $target -match '[\/]node_modules[\/]') { Issue $target 'Referenced dependency excluded by configuration.'; continue }
+                if (-not $IncludeDependencies -and $target -match '[\\/]node_modules[\\/]') { Issue $target 'Referenced dependency excluded by configuration.'; continue }
                 if ([IO.Path]::GetExtension($target) -notin @('.js','.mjs','.cjs','.ts','.tsx','.jsx')) {
                     Finding $source 'Execution' 'node-asset' 'Suspicious' 'Node executes a file with an unexpected extension.' $hash $field $target
                 }
@@ -153,8 +153,11 @@ function Invoke-PolinRiderScan {
         }
     }
     function InspectString($text, $source, $hash, $field, $base) {
-        $download = (Matches $text '\b(curl|wget|Invoke-WebRequest|iwr|DownloadString)\b').Count -gt 0
-        $execute = (Matches $text '(\|\s*(bash|sh|cmd|powershell|iex)\b|\b(Invoke-Expression|iex)\b)').Count -gt 0
+        # Assemble signatures so scanning this detector does not match its own rule definitions.
+        $downloadPattern = '\b(' + ('cu'+'rl|we'+'gt|Invoke-'+'WebRequest|i'+'wr|Download'+'String') + ')\b'
+        $executePattern = '(\|\s*(' + ('ba'+'sh|s'+'h|c'+'md|power'+'shell|i'+'ex') + ')\b|\b(' + ('Invoke-'+'Expression|i'+'ex') + ')\b)'
+        $download = (Matches $text $downloadPattern).Count -gt 0
+        $execute = (Matches $text $executePattern).Count -gt 0
         if ($download -and $execute) { Finding $source 'Execution' 'download-execute' 'High' 'Command downloads content and passes it to an interpreter.' $hash $field $null }
         if ((Matches $text '\b(?:powershell|pwsh)(?:\.exe)?\b[^\r\n]*\s-(?:enc|encodedcommand)\b').Count) {
             Finding $source 'Execution' 'encoded-shell' 'Suspicious' 'Encoded PowerShell execution requires review.' $hash $field $null
@@ -224,7 +227,7 @@ function Invoke-PolinRiderScan {
                 $ext=$item.Extension.ToLowerInvariant()
                 $eligible = $ext -in @('.js','.mjs','.cjs','.jsx','.ts','.tsx','.php','.woff','.woff2','.ttf','.otf','.llf','.bat','.cmd','.ps1','.code-workspace') -or
                     $ext -eq '.dict' -or $item.Name -in @('package.json','package-lock.json','npm-shrinkwrap.json','yarn.lock','pnpm-lock.yaml','composer.json','composer.lock','temp_auto_push.bat','config.bat') -or
-                    ($dir -match '[\/]\.vscode$' -and $ext -eq '.json')
+                    ($dir -match '[\\/]\.vscode$' -and $ext -eq '.json')
                 if ($eligible -and $queued.Add($item.FullName)) { $queue.Enqueue(@{ Path=$item.FullName; Reference=$null }) }
             }
         } catch { Issue $dir 'Directory could not be fully enumerated.' }
@@ -280,7 +283,7 @@ function Invoke-PolinRiderScan {
             }
             if ($v1 -ge 2 -or ($text.Contains($rotated[0]) -and $v2 -ge 2)) {
                 Finding $path 'Payload' 'campaign-markers' 'High' 'Multiple documented PolinRider fingerprints occur together.' $hash 'content' $candidate.Reference
-            } elseif ((Matches $text ('\bglobal\s*(?:\.i\s*=|\[\s*[''"](?:!|'+$vSlot+')[''"]\s*\]\s*=')).Count -and
+            } elseif ((Matches $text ('\bglobal\s*(?:\.i\s*=|\[\s*[''"](?:!|'+$vSlot+')[''"]\s*\]\s*=)')).Count -and
                 (Matches $text '(eval\s*\(|_0x[a-f0-9]{4,}|child_process)').Count) {
                 Finding $path 'Payload' 'loader-structure' 'Suspicious' 'Build marker and obfuscated/executable JavaScript structure require review.' $hash 'content' $candidate.Reference
             }
@@ -297,10 +300,10 @@ function Invoke-PolinRiderScan {
                 $anomaly=InspectFont $bytes $ext
                 if ($anomaly) { Finding $path 'Asset' 'font-container' 'Suspicious' $anomaly $hash 'header/tables' $candidate.Reference }
             }
-            $isConfig=$path -match '[\/]\.vscode[\/][^\/]+\.json$' -or $ext -eq '.code-workspace'
+            $isConfig=$path -match '[\\/]\.vscode[\\/][^\\/]+\.json$' -or $ext -eq '.code-workspace'
             $isManifest=$name -in @('package.json','package-lock.json','npm-shrinkwrap.json','composer.json','composer.lock')
             $base=[IO.Path]::GetDirectoryName($path)
-            if ($isConfig -and $base -match '[\/]\.vscode$') { $base=[IO.Path]::GetDirectoryName($base) }
+            if ($isConfig -and $base -match '[\\/]\.vscode$') { $base=[IO.Path]::GetDirectoryName($base) }
             if ($isConfig -or $isManifest) {
                 try { $data=JsonData $text; WalkData $data $path $hash '$' $base }
                 catch { Issue $path 'JSONC parsing failed or exceeded limits; raw inspection still performed.'; InspectString $text $path $hash 'raw fallback' $base }
@@ -316,7 +319,7 @@ function Invoke-PolinRiderScan {
             if ($ext -eq '.php' -and (Matches $text '\bshell_exec\s*\(').Count -and (Matches $text '\bnode\b|base64_decode').Count) {
                 Finding $path 'Execution' 'php-wrapper' 'Suspicious' 'PHP shell execution combined with Node or encoded content requires review.' $hash 'content' $null
             }
-            if ($name -eq 'cli.js' -and $path -match '[\/]npm[\/]lib[\/]cli\.js$' -and $bytes.Length -gt 500000) {
+            if ($name -eq 'cli.js' -and $path -match '[\\/]npm[\\/]lib[\\/]cli\.js$' -and $bytes.Length -gt 500000) {
                 Finding $path 'Persistence' 'oversized-npm-cli' 'Review' 'npm CLI is unusually large; compare with a verified installation and inspect for appended payloads.' $hash 'file size/content' $null
             }
             if ($ext -in @('.js','.mjs','.cjs','.jsx','.ts','.tsx') -and
@@ -328,7 +331,11 @@ function Invoke-PolinRiderScan {
                 Finding $path 'Propagation' 'history-rewrite' 'High' 'Batch script matches the documented Git history rewriting pattern.' $hash 'content' $null
                 if ($ext -eq '.bat') { $legacyBats.Add([pscustomobject]@{Path=$path;SHA256=$hash}) }
             }
-        } catch { Issue $path 'File could not be safely analyzed (read, parser or regex limit).' }
+        } catch {
+            $failure = $_.Exception
+            if ($failure.InnerException) { $failure = $failure.InnerException }
+            Issue $path ('File could not be safely analyzed ('+$failure.GetType().Name+').')
+        }
     }
     if (Limited) { $stopped=$true }
     if ($stopped) { Issue '' 'Scan cancelled or elapsed time limit reached.' }

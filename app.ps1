@@ -16,6 +16,13 @@ $configFile  = Join-Path $root 'config.json'
 $historyFile = Join-Path $root 'history.json'
 $logFile     = Join-Path $root 'monitor.log'
 $version     = '1.1.0'
+
+# Original PolinRider markers are assembled at runtime to prevent this scanner
+# from matching its own source. The primary scan uses these exact four values.
+$global:m1 = -join ([char[]]@(114,109,99,101,106,37,111,116,98,37))
+$global:m2 = -join ([char[]]@(95,36,95,49,101,52,50))
+$global:m3 = -join ([char[]]@(50,56,53,55,54,56,55))
+$global:m4 = -join ([char[]]@(50,54,54,55,54,56,54))
 $global:payloadStart = -join ([char[]]@(103,108,111,98,97,108,91,39,33,39,93))
 
 # Shared live-log collection that the scan runspace appends to and the UI drains
@@ -42,7 +49,9 @@ $defaultConfig = [ordered]@{
         "$env:USERPROFILE\Documents",
         "$env:USERPROFILE\Downloads",
         "$env:USERPROFILE\source",
-        "$env:USERPROFILE\projects"
+        "$env:USERPROFILE\projects",
+        "$env:USERPROFILE\Documents\IT Projects",
+        'C:\'
     )
     MaxFileSize      = 10000000
     AutoScanOnLaunch = $false
@@ -996,28 +1005,64 @@ function Run-Scan {
 
     $rs = [runspacefactory]::CreateRunspace()
     $rs.ApartmentState = 'STA'; $rs.ThreadOptions = 'ReuseThread'; $rs.Open()
+    $rs.SessionStateProxy.SetVariable('m1', $global:m1)
+    $rs.SessionStateProxy.SetVariable('m2', $global:m2)
+    $rs.SessionStateProxy.SetVariable('m3', $global:m3)
+    $rs.SessionStateProxy.SetVariable('m4', $global:m4)
     $rs.SessionStateProxy.SetVariable('scanPaths', @($global:config.ScanPaths))
     $rs.SessionStateProxy.SetVariable('maxSize', $global:config.MaxFileSize)
     $rs.SessionStateProxy.SetVariable('scanLog', $global:scanLog)
     $rs.SessionStateProxy.SetVariable('scanState', $global:scanState)
-    $rs.SessionStateProxy.SetVariable('scannerPath', (Join-Path $root 'Scanner.ps1'))
-    $rs.SessionStateProxy.SetVariable('includeDependencies', [bool]$global:config.IncludeDependencies)
 
     $ps = [PowerShell]::Create(); $ps.Runspace = $rs
     [void]$ps.AddScript({
-        . $scannerPath
-        $result = Invoke-PolinRiderScan -ScanPaths $scanPaths -MaxFileSize $maxSize -IncludeDependencies $includeDependencies -IsCancelled { $scanState.Cancelled } -OnProgress {
-            param($path, $count)
-            $scanState.Files = $count
-            $scanState.Folder = [IO.Path]::GetDirectoryName($path)
-            if ($count % 25 -eq 0) { [void]$scanLog.Add("scanned $count files") }
-        } -HostProvider { Get-PolinRiderHostObservations }
-        foreach ($finding in $result.Findings) {
-            [void]$scanLog.Add("[$($finding.Confidence)] $($finding.Path) | $($finding.RuleId) | $($finding.Location) | $($finding.Reason)")
+        function L($msg) { [void]$scanLog.Add("$((Get-Date).ToString('hh:mm:ss tt')) $msg") }
+        $markers = @($m1, $m2, $m3, $m4)
+        $c2IPs = @('166.88.54.158','54.251.176.6','52.221.63.237','18.142.149.167','34.36.29.190','52.223.34.155','35.71.137.105')
+        $start = Get-Date; $infectedFiles = @(); $totalScanned = 0; $cancelled = $false
+        L '=== file scan ==='
+        :outer foreach ($path in $scanPaths) {
+            if ($scanState.Cancelled) { $cancelled = $true; break }
+            if (-not (Test-Path $path)) { L "[skip] not found: $path"; continue }
+            $scanState.Folder = $path
+            $files = Get-ChildItem -Path $path -Recurse -Force -Include '*.js','*.mjs','*.cjs','*.jsx','*.ts','*.tsx' -ErrorAction SilentlyContinue |
+                Where-Object { $_.FullName -notmatch '\\node_modules\\' -and $_.Length -lt $maxSize }
+            L (">> {0}  ({1} files)" -f $path, $files.Count)
+            foreach ($f in $files) {
+                if ($scanState.Cancelled) { $cancelled = $true; break outer }
+                $totalScanned++; $scanState.Files = $totalScanned
+                $rel = $f.FullName.Substring($path.Length).TrimStart('\','/')
+                if ($rel.Length -gt 80) { $rel = '...' + $rel.Substring($rel.Length - 77) }
+                try {
+                    $c = Get-Content -LiteralPath $f.FullName -Raw -ErrorAction Stop
+                    $hits = 0; foreach ($m in $markers) { if ($c.IndexOf($m) -ge 0) { $hits++ } }
+                    if ($hits -ge 2) { $infectedFiles += $f.FullName; L ("   [HIT] {0}  <-- INFECTED" -f $rel) }
+                    elseif ($totalScanned % 25 -eq 0) { L ("   ... scanned {0} files (current: {1})" -f $totalScanned, $rel) }
+                } catch { L ("   [err] {0}: {1}" -f $rel, $_.Exception.Message) }
+            }
         }
-        foreach ($issue in $result.CoverageIssues) { [void]$scanLog.Add("[coverage] $($issue.Path) | $($issue.Reason)") }
-        [void]$scanLog.Add("Scan: $($result.Result); $($result.Files) files; $($result.Findings.Count) findings; $($result.CoverageIssues.Count) coverage issues. Report-only; no files changed.")
-        $result
+        $procIds = @(); $c2Hits = @(); $batFiles = @()
+        if (-not $cancelled) {
+            L '=== process scan ==='
+            $evalMarker = -join ([char[]]@(103,108,111,98,97,108,91))
+            $badProcs = @(Get-WmiObject Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -and $_.CommandLine.IndexOf($evalMarker) -ge 0 -and $_.CommandLine -match ' -e |--eval' })
+            $procIds = @($badProcs | ForEach-Object ProcessId)
+            if ($procIds.Count -eq 0) { L 'no suspicious node.exe processes' } else { foreach ($p in $badProcs) { L ("   [PROC] PID {0}" -f $p.ProcessId) } }
+            L '=== c2 connection scan ==='
+            foreach ($ip in $c2IPs) { foreach ($cn in (Get-NetTCPConnection -RemoteAddress $ip -ErrorAction SilentlyContinue)) { $c2Hits += "$ip <- PID $($cn.OwningProcess)"; L ("   [CONN] {0}" -f $c2Hits[-1]) } }
+            if ($c2Hits.Count -eq 0) { L 'no active C2 connections' }
+            L '=== bat dropper scan (temp_auto_push.bat signature) ==='
+            foreach ($path in $scanPaths) {
+                if ($scanState.Cancelled) { break }; if (-not (Test-Path $path)) { continue }
+                $bats = Get-ChildItem -Path $path -Recurse -Force -Filter '*.bat' -ErrorAction SilentlyContinue | Where-Object { $_.Length -lt 100000 -and $_.FullName -notmatch '\\node_modules\\' }
+                foreach ($b in $bats) { try { $bc = Get-Content -LiteralPath $b.FullName -Raw -ErrorAction Stop; if ($bc -and $bc -match 'commit --amend' -and $bc -match 'git push' -and $bc -match '--no-verify' -and $bc -match 'date %') { $batFiles += $b.FullName; L ("   [BAT] {0}  <-- DROPPER" -f $b.FullName) } } catch {} }
+            }
+            if ($batFiles.Count -eq 0) { L 'no .bat droppers found' }
+        }
+        $elapsed = (Get-Date) - $start
+        $result = if ($cancelled) { 'STOPPED' } elseif ($infectedFiles.Count -eq 0 -and $procIds.Count -eq 0 -and $c2Hits.Count -eq 0 -and $batFiles.Count -eq 0) { 'CLEAN' } else { 'INFECTED' }
+        L ''; L ("=== scan {0}: {1} files in {2:N1}s ===" -f $result.ToLower(), $totalScanned, $elapsed.TotalSeconds)
+        @{ When=(Get-Date -Format 'yyyy-MM-dd hh:mm:ss tt'); Files=$totalScanned; Infected=$infectedFiles.Count; Procs=$procIds.Count; C2=$c2Hits.Count; BatDroppers=$batFiles.Count; Duration=('{0:N1}s' -f $elapsed.TotalSeconds); Result=$result; InfectedFiles=$infectedFiles; ProcIds=$procIds; C2Hits=$c2Hits; BatFiles=$batFiles }
     })
     $global:currentScanPs     = $ps
     $global:currentScanRs     = $rs
