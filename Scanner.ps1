@@ -62,18 +62,18 @@ function Invoke-PolinRiderScan {
     }
     # Remove JSONC comments/trailing commas while preserving strings and positions.
     function JsonData([string]$text) {
-        $pattern = '"(?:\.|[^"\])*"|//[^\r\n]*|/\*[\s\S]*?\*/'
+        $pattern = '"(?:\\.|[^"\\])*"|//[^\r\n]*|/\*[\s\S]*?\*/'
         $rx = [regex]::new($pattern, [Text.RegularExpressions.RegexOptions]::None, [TimeSpan]::FromMilliseconds(200))
         $clean = $rx.Replace($text, [Text.RegularExpressions.MatchEvaluator]{ param($m)
             if ($m.Value.StartsWith('"')) { return $m.Value }
             return [regex]::Replace($m.Value, '[^\r\n]', ' ')
         })
-        $rx = [regex]::new('"(?:\.|[^"\])*"|,\s*(?=[}\]])', [Text.RegularExpressions.RegexOptions]::None, [TimeSpan]::FromMilliseconds(200))
+        $rx = [regex]::new('"(?:\\.|[^"\\])*"|,\s*(?=[}\]])', [Text.RegularExpressions.RegexOptions]::None, [TimeSpan]::FromMilliseconds(200))
         $clean = $rx.Replace($clean, [Text.RegularExpressions.MatchEvaluator]{ param($m)
             if ($m.Value.StartsWith('"')) { return $m.Value }; return ' ' * $m.Length
         })
         # Bound nesting before handing data to the Windows PowerShell JSON parser.
-        $outside = [regex]::Replace($clean, '"(?:\.|[^"\])*"', '""', [Text.RegularExpressions.RegexOptions]::None, [TimeSpan]::FromMilliseconds(200))
+        $outside = [regex]::Replace($clean, '"(?:\\.|[^"\\])*"', '""', [Text.RegularExpressions.RegexOptions]::None, [TimeSpan]::FromMilliseconds(200))
         $depth = 0
         for ($index=0; $index -lt $outside.Length; $index++) {
             if ($index % 4096 -eq 0 -and (Limited)) { throw 'Parsing cancelled or timed out.' }

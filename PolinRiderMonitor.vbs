@@ -1,3 +1,7 @@
-' Launches the PolinRider Monitor app without a console window
+' Launches the fork copy without a console window.
+Set fso = CreateObject("Scripting.FileSystemObject")
 Set sh = CreateObject("WScript.Shell")
-sh.Run "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ""C:\Development\polinrider-monitor\app.ps1""", 0, False
+root = fso.GetParentFolderName(WScript.ScriptFullName)
+appPath = fso.BuildPath(root, "app.ps1")
+command = "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File """ & appPath & """"
+sh.Run command, 0, False

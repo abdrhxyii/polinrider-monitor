@@ -1,4 +1,4 @@
-# PolinRider Monitor - Desktop GUI Dashboard
+# PolinRider Monitor (Fork) - Desktop GUI Dashboard
 # Open-source security tool that scans Windows machines for the PolinRider /
 # BeaverTail (DPRK Lazarus) JavaScript supply-chain malware described at
 # https://opensourcemalware.com/blog/polinrider-attack
@@ -62,7 +62,7 @@ $global:config = Load-Config
 [xml]$xaml = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="PolinRider Monitor"
+        Title="PolinRider Monitor (Fork)"
         Height="780" Width="1180" MinHeight="640" MinWidth="980"
         Background="#000000"
         WindowStartupLocation="CenterScreen"
@@ -542,15 +542,15 @@ $global:config = Load-Config
                                                 <TextBlock FontSize="12">
                                                     <Run Text="{Binding Files}" Foreground="#F1F5F9" FontWeight="SemiBold"/><Run Text=" files" Foreground="#94A3B8"/>
                                                 </TextBlock>
-                                                <TextBlock Text="·" FontSize="13" Foreground="#475569" Margin="10,0"/>
+                                        <TextBlock Text="&#x00B7;" FontSize="13" Foreground="#475569" Margin="10,0"/>
                                                 <TextBlock FontSize="12">
                                                     <Run Text="{Binding Infected}" Foreground="#F1F5F9" FontWeight="SemiBold"/><Run Text=" infected" Foreground="#94A3B8"/>
                                                 </TextBlock>
-                                                <TextBlock Text="·" FontSize="13" Foreground="#475569" Margin="10,0"/>
+                                        <TextBlock Text="&#x00B7;" FontSize="13" Foreground="#475569" Margin="10,0"/>
                                                 <TextBlock FontSize="12">
                                                     <Run Text="{Binding Procs}" Foreground="#F1F5F9" FontWeight="SemiBold"/><Run Text=" procs" Foreground="#94A3B8"/>
                                                 </TextBlock>
-                                                <TextBlock Text="·" FontSize="13" Foreground="#475569" Margin="10,0"/>
+                                        <TextBlock Text="&#x00B7;" FontSize="13" Foreground="#475569" Margin="10,0"/>
                                                 <TextBlock FontSize="12">
                                                     <Run Text="{Binding C2}" Foreground="#F1F5F9" FontWeight="SemiBold"/><Run Text=" C2" Foreground="#94A3B8"/>
                                                 </TextBlock>
@@ -635,7 +635,7 @@ $global:config = Load-Config
                                 <Ellipse Width="10" Height="10" Fill="#ff5f56" Margin="0,0,6,0"/>
                                 <Ellipse Width="10" Height="10" Fill="#ffbd2e" Margin="0,0,6,0"/>
                                 <Ellipse Width="10" Height="10" Fill="#27c93f" Margin="0,0,14,0"/>
-                                <TextBlock Text="polinrider-monitor — live scan" FontFamily="Consolas" FontSize="12" Foreground="#7fc28b" VerticalAlignment="Center"/>
+                            <TextBlock Text="polinrider-monitor &#x2014; live scan" FontFamily="Consolas" FontSize="12" Foreground="#7fc28b" VerticalAlignment="Center"/>
                             </StackPanel>
                         </Border>
 
@@ -765,7 +765,7 @@ $global:config = Load-Config
                                         <Path Data="{StaticResource IconShield}" Fill="White" Stretch="Uniform" Width="24" Height="24" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                                     </Border>
                                     <StackPanel Margin="14,0,0,0" VerticalAlignment="Center">
-                                        <TextBlock Text="PolinRider Monitor" FontSize="20" FontWeight="Bold" Foreground="{StaticResource TextPri}"/>
+                                        <TextBlock Text="PolinRider Monitor (Fork)" FontSize="20" FontWeight="Bold" Foreground="{StaticResource TextPri}"/>
                                         <TextBlock Name="AboutVersion" Text="" FontSize="12" Foreground="{StaticResource TextSec}"/>
                                     </StackPanel>
                                 </StackPanel>
@@ -812,7 +812,7 @@ $global:config = Load-Config
                             <StackPanel Margin="24,18">
                                 <TextBlock Text="License" FontSize="14" FontWeight="SemiBold" Foreground="{StaticResource TextPri}" Margin="0,0,0,10"/>
                                 <TextBlock TextWrapping="Wrap" FontSize="12" Foreground="{StaticResource TextSec}" LineHeight="20">
-                                    MIT — provided as-is with no warranty. Always verify cleanups against original sources before pushing fixes. If you find a variant this tool misses, please open an issue on GitHub.
+                                    MIT &#x2014; provided as-is with no warranty. Always verify cleanups against original sources before pushing fixes. If you find a variant this tool misses, please open an issue on GitHub.
                                 </TextBlock>
                             </StackPanel>
                         </Border>
@@ -846,7 +846,7 @@ $elementNames = @(
 )
 foreach ($n in $elementNames) { $ui[$n] = $window.FindName($n) }
 
-$ui.SidebarHost.Text    = "$env:COMPUTERNAME · $env:USERNAME"
+$ui.SidebarHost.Text    = "$env:COMPUTERNAME $([char]0x00B7) $env:USERNAME"
 $ui.SidebarVersion.Text = $version
 $ui.AboutVersion.Text   = "Version $version"
 
@@ -1310,7 +1310,7 @@ $ui.BtnClean.Add_Click({ Clean-Infections })
 $ui.BtnClearLog.Add_Click({ $ui.LogText.Text = "" })
 $ui.BtnOpenLogFile.Add_Click({
     if (Test-Path $logFile) { Start-Process notepad.exe -ArgumentList $logFile }
-    else { [System.Windows.MessageBox]::Show("No log yet - run a scan first.", "PolinRider Monitor") | Out-Null }
+    else { [System.Windows.MessageBox]::Show("No log yet - run a scan first.", "PolinRider Monitor (Fork)") | Out-Null }
 })
 
 $ui.BtnAddPath.Add_Click({ Add-Path })

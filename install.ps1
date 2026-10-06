@@ -1,4 +1,4 @@
-﻿# PolinRider Monitor - installer
+# PolinRider Monitor (Fork) - installer
 # Creates a Desktop shortcut and initialises config.json with sensible defaults.
 # Safe to re-run; updates the shortcut to the current location.
 
@@ -6,7 +6,7 @@ $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
 
 Write-Host ""
-Write-Host "PolinRider Monitor - install" -ForegroundColor Cyan
+Write-Host "PolinRider Monitor (Fork) - install" -ForegroundColor Cyan
 Write-Host ""
 
 # 1. Initialise config if missing
@@ -34,7 +34,7 @@ if (-not (Test-Path $configFile)) {
 
 # 2. Create Desktop shortcut
 $desktop = [Environment]::GetFolderPath('Desktop')
-$lnkPath = Join-Path $desktop 'PolinRider Monitor.lnk'
+$lnkPath = Join-Path $desktop 'PolinRider Monitor (Fork).lnk'
 $vbs     = Join-Path $root 'PolinRiderMonitor.vbs'
 if (-not (Test-Path $vbs)) {
     throw "PolinRiderMonitor.vbs not found at $vbs"
@@ -44,7 +44,7 @@ $shortcut = $wshShell.CreateShortcut($lnkPath)
 $shortcut.TargetPath = $vbs
 $shortcut.WorkingDirectory = $root
 $shortcut.IconLocation = "C:\WINDOWS\System32\imageres.dll,16"
-$shortcut.Description = "PolinRider Monitor - static detection and recovery guidance"
+$shortcut.Description = "PolinRider Monitor (Fork) - static detection and recovery guidance"
 $shortcut.Save()
 Write-Host "  Desktop shortcut created: $lnkPath" -ForegroundColor Green
 

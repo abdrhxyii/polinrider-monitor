@@ -1,4 +1,4 @@
-# PolinRider Monitor
+# PolinRider Monitor (Fork)
 
 A local Windows PowerShell/WPF tool for static PolinRider detection and recovery guidance.
 
@@ -24,9 +24,9 @@ Installed dependencies are excluded by default; enable **Inspect node_modules to
 
 ## Install and use
 
-Keep `Scanner.ps1` beside `app.ps1`. No third-party scanner dependencies are required.
+Keep `Scanner.ps1` beside `app.ps1`. The fork launcher resolves its app from its own folder, and creates a separate `PolinRider Monitor (Fork)` desktop shortcut. Its config/history/log stay beside the fork files. No third-party scanner dependencies are required.
 
-1. Run `install.ps1` to create the shortcut, or launch `PolinRiderMonitor.vbs` directly.
+1. Run `install.ps1` to create the fork shortcut, or launch `PolinRiderMonitor.vbs` directly.
 2. Choose folders and options in Settings, then select **Scan Now**.
 3. Review findings and coverage messages in Logs. Detailed hashes, evidence fields, reference locations, scope, and confidence are retained in `history.json`; summaries are retained in `monitor.log`.
 4. If the scan found original-pattern JavaScript, matching inline Node processes, or matching batch droppers, **Secure Machine** offers cleanup for those findings. It rechecks the marker/signature and selected scan scope before acting. JavaScript cleanup also requires the expected payload boundary; otherwise it skips the file. New config, font, renamed-payload, PHP, and review-only findings remain for manual remediation from verified originals.
